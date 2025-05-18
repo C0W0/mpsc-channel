@@ -1,4 +1,4 @@
-#include "ConcurrentQueue.h"
+#include "MPSCQueue.h"
 #include <iostream>
 #include <thread>
 #include <utility>
@@ -10,7 +10,6 @@
 #include <iomanip>
 #include <string>
 #include <sstream>
-#include <functional>
 
 // Utility for test reporting
 std::mutex cout_mutex;
@@ -22,41 +21,36 @@ struct TestResult {
     std::string message;
 };
 
-void hello() {
-    std::cout << "Hello, World!" << std::endl;
-}
-
-// Basic Test - Original test moved to a function
-void basic_producer(concurrent_queue::ConcurrentQueue<int, 4>* queue, const int start_v) {
-    SAFE_COUT("Basic Producer " << start_v << " start");
-    for (int i = 0; i < 10; i++) {
-        queue->insert(start_v + i);
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
-    SAFE_COUT("Basic Producer " << start_v << " end");
-}
-
-void basic_consumer(concurrent_queue::ConcurrentQueue<int, 4>* queue) {
-    SAFE_COUT("Basic Consumer start");
-    bool terminate = false;
-    while (!terminate) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        const auto val = queue->remove();
-        SAFE_COUT("Basic consumer retrieved: " << val);
-        terminate = val == 19; // Changed to 19 (10 + 9) to match last item from second producer
-    }
-    SAFE_COUT("Basic Consumer end");
-}
-
 TestResult basic_test() {
     SAFE_COUT("\n=== BASIC TEST (2 producers, 1 consumer) ===");
-    using namespace concurrent_queue;
-    ConcurrentQueue<int, 4> queue;
+    using namespace mpsc_queue;
+    MPSCQueue<int, 4> queue;
+
+    auto producer_fn = [&queue](const int start_v) {
+        SAFE_COUT("Basic Producer " << start_v << " start");
+        for (int i = 0; i < 10; i++) {
+            queue.insert(start_v + i);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        SAFE_COUT("Basic Producer " << start_v << " end");
+    };
+
+    auto consumer_fn = [&queue]() {
+        SAFE_COUT("Basic Consumer start");
+        bool terminate = false;
+        while (!terminate) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            const auto val = queue.remove();
+            SAFE_COUT("Basic consumer retrieved: " << val);
+            terminate = val == 19; // Changed to 19 (10 + 9) to match last item from second producer
+        }
+        SAFE_COUT("Basic Consumer end");
+    };
 
     std::thread threads[] = {
-        std::thread(basic_producer, &queue, 0),
-        std::thread(basic_producer, &queue, 10),
-        std::thread(basic_consumer, &queue),
+        std::thread(producer_fn, 0),
+        std::thread(producer_fn, 10),
+        std::thread(consumer_fn),
     };
 
     for (auto& t : threads) {
@@ -75,15 +69,14 @@ struct Item {
 // Simple stress test to verify MPMC safety
 TestResult stress_test() {
     SAFE_COUT("\n=== STRESS TEST (3 producers, 2 consumers) ===");
-    using namespace concurrent_queue;
+    using namespace mpsc_queue;
     
     // Queue with 32 slots
-    ConcurrentQueue<Item, 5> queue;
+    MPSCQueue<Item, 5> queue;
     
     // Configuration
     constexpr int ITEMS_PER_PRODUCER = 1000;
     constexpr int NUM_PRODUCERS = 3;
-    constexpr int NUM_CONSUMERS = 2;
     
     // Tracking
     std::atomic<int> items_produced{0};
@@ -113,8 +106,8 @@ TestResult stress_test() {
     };
     
     // Consumer function
-    auto consumer_fn = [&](int id) {
-        SAFE_COUT("Consumer " << id << " starting");
+    auto consumer_fn = [&]() {
+        SAFE_COUT("Consumer starting");
         while (items_consumed.load() < NUM_PRODUCERS * ITEMS_PER_PRODUCER) {
             auto [producer_id, value] = queue.remove();
             items_consumed++;
@@ -139,7 +132,7 @@ TestResult stress_test() {
                 SAFE_COUT("Progress: " << items_consumed << " items consumed");
             }
         }
-        SAFE_COUT("Consumer " << id << " finished");
+        SAFE_COUT("Consumer finished");
     };
     
     // Start all threads
@@ -150,10 +143,8 @@ TestResult stress_test() {
         threads.emplace_back(producer_fn, i);
     }
     
-    // Start consumers
-    for (int i = 0; i < NUM_CONSUMERS; i++) {
-        threads.emplace_back(consumer_fn, i);
-    }
+    // Start consumer
+    threads.emplace_back(consumer_fn);
     
     // Wait for all threads to finish
     for (auto& t : threads) {
@@ -186,7 +177,7 @@ TestResult stress_test() {
     
     if (success) {
         message << "Successfully processed " << items_consumed << " items with "
-                << NUM_PRODUCERS << " producers and " << NUM_CONSUMERS << " consumers";
+                << NUM_PRODUCERS << " producers and 1 consumer";
     }
     
     SAFE_COUT(message.str());

@@ -7,11 +7,11 @@
 #include <atomic>
 #include <semaphore>
 
-namespace concurrent_queue {
+namespace mpsc_queue {
     using uint = unsigned int;
 
     template <typename T, uint N>
-    class ConcurrentQueue {
+    class MPSCQueue {
         static_assert(N > 0, "N must be positive");
         static_assert(N <= 32, "N must be less than 32");
     private:
@@ -21,7 +21,7 @@ namespace concurrent_queue {
         std::counting_semaphore<1 << N> slotSem;
         std::counting_semaphore<1 << N> itemSem;
     public:
-        explicit ConcurrentQueue() noexcept
+        explicit MPSCQueue() noexcept
             : headptr(0),
               tailptr(0),
               slotSem(1 << N),
@@ -30,11 +30,11 @@ namespace concurrent_queue {
             data = new T[1 << N];
         }
 
-        ~ConcurrentQueue() noexcept {
+        ~MPSCQueue() noexcept {
             delete[] data;
         }
 
-        ConcurrentQueue(const ConcurrentQueue&) = delete;
+        MPSCQueue(const MPSCQueue&) = delete;
 
         void insert(T&& item) noexcept {
             slotSem.acquire();
