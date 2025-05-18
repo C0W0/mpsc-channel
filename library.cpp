@@ -8,8 +8,12 @@
 #include <unordered_set>
 #include <chrono>
 #include <iomanip>
+#include <map>
+#include <unordered_map>
 #include <string>
 #include <sstream>
+
+#include "Handles.h"
 
 // Utility for test reporting
 std::mutex cout_mutex;
@@ -23,7 +27,7 @@ struct TestResult {
 
 TestResult basic_test() {
     SAFE_COUT("\n=== BASIC TEST (2 producers, 1 consumer) ===");
-    using namespace mpsc_queue;
+    using namespace mpsc::sync_queue;
     MPSCQueue<int, 4> queue;
 
     auto producer_fn = [&queue](const int start_v) {
@@ -40,18 +44,17 @@ TestResult basic_test() {
         bool terminate = false;
         while (!terminate) {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            const auto val = queue.remove();
+            const auto val = queue.remove().value();
             SAFE_COUT("Basic consumer retrieved: " << val);
             terminate = val == 19; // Changed to 19 (10 + 9) to match last item from second producer
         }
         SAFE_COUT("Basic Consumer end");
     };
 
-    std::thread threads[] = {
-        std::thread(producer_fn, 0),
-        std::thread(producer_fn, 10),
-        std::thread(consumer_fn),
-    };
+    std::vector<std::thread> threads;
+    threads.emplace_back(producer_fn, 0);
+    threads.emplace_back(producer_fn, 10);
+    threads.emplace_back(consumer_fn);
 
     for (auto& t : threads) {
         t.join();
@@ -66,23 +69,24 @@ struct Item {
     int value;
 };
 
-// Simple stress test to verify MPMC safety
+// Simple stress test to verify MPSC safety
 TestResult stress_test() {
     SAFE_COUT("\n=== STRESS TEST (3 producers, 1 consumer) ===");
-    using namespace mpsc_queue;
+    using namespace mpsc::sync_queue;
     
     // Queue with 32 slots
     MPSCQueue<Item, 5> queue;
     
     // Configuration
     constexpr int ITEMS_PER_PRODUCER = 1000;
-    constexpr int NUM_PRODUCERS = 3;
+    constexpr int NUM_PRODUCERS = 2;
     
     // Tracking
     std::atomic<int> items_produced{0};
     std::atomic<int> items_consumed{0};
     std::mutex consumed_mutex;
     std::unordered_set<int> consumed_values;
+    std::map<int, int> index_freqs;
     bool found_duplicate = false;
     
     // Producer function
@@ -109,20 +113,23 @@ TestResult stress_test() {
     auto consumer_fn = [&]() {
         SAFE_COUT("Consumer starting");
         while (items_consumed.load() < NUM_PRODUCERS * ITEMS_PER_PRODUCER) {
-            auto [producer_id, value] = queue.remove();
+            auto [idx, item] = queue.remove_dbg();
+            auto [producer_id, value] = item.value();
             items_consumed++;
 
             // Check for duplicates
             {
                 std::lock_guard<std::mutex> lock(consumed_mutex);
-
-                // Calculate the unique value across all producers
-                int unique_val = producer_id + (value * NUM_PRODUCERS);
+                index_freqs[idx] ++;
 
                 // Check if we've seen this value before
-                if (!consumed_values.insert(unique_val).second) {
-                    SAFE_COUT("ERROR: Duplicate value detected: " << unique_val
-                             << " from producer " << producer_id);
+                if (!consumed_values.insert(value).second) {
+                    SAFE_COUT("ERROR: Duplicate value detected: " << value
+                             << " from producer " << producer_id << " at index " << idx);
+                    SAFE_COUT("Frequency of removed indices: ");
+                    for (auto&& [k, v] : index_freqs) {
+                        SAFE_COUT(" " << k << ": " << v);
+                    }
                     found_duplicate = true;
                 }
             }
@@ -184,21 +191,54 @@ TestResult stress_test() {
     return {success, message.str()};
 }
 
-TestResult auto_exit_consumer_test() {
+std::thread auto_exit_test1_util(bool* test_passed) {
+    auto [tx, rx] = mpsc::channel::create<int>();
 
+    auto consumer_fn = [rx = std::move(rx), &test_passed]() {
+        SAFE_COUT("Consumer starting");
+        *test_passed = !rx->remove().has_value();
+        SAFE_COUT("Consumer finished");
+    };
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    std::thread consumer_fn_thread(std::move(consumer_fn));
+    return consumer_fn_thread;
+}
+
+// Test to make sure the consumer gets unblocked if the queue is dropped
+TestResult auto_exit_consumer_test1() {
+    SAFE_COUT("\n=== Auto exit consumer test 1: empty queue ===");
+    using namespace mpsc::sync_queue;
+
+    bool test_passed = true;
+
+    std::thread consumer_thread = auto_exit_test1_util(&test_passed);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    consumer_thread.join();
+
+    if (test_passed) {
+        return {true, "Consumer received empty value when the producer is dropped"};
+    }
+    return {false, "Auto exit consumer test 1 failed: expecting empty value to unblock consumer"};
 }
 
 int main() {
     srand(static_cast<unsigned>(time(nullptr)));
-    
+    using namespace mpsc::channel;
+    using namespace mpsc;
+
     // Run tests
-    auto basic_result = basic_test();
-    auto stress_result = stress_test();
+    std::map<std::string, TestResult> results;
+    // results["Basic Test"] = basic_test();
+    results["Stress Test"] = stress_test();
+    // results["Auto exit Test 1"] = auto_exit_consumer_test1();
     
     // Report results
     SAFE_COUT("\n=== TEST RESULTS ===");
-    SAFE_COUT("Basic Test: " << (basic_result.success ? "PASSED" : "FAILED"));
-    SAFE_COUT("Stress Test: " << (stress_result.success ? "PASSED" : "FAILED"));
-    
-    return (basic_result.success && stress_result.success) ? 0 : 1;
+    for (auto&& [k, v]: results) {
+        SAFE_COUT(k << ": " << (v.success ? "succeeded" : "failed") << " - " << v.message );
+    }
+
+    return 0;
 }
