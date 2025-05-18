@@ -4,7 +4,7 @@
 
 #ifndef CONCURRENTQUEUE_H
 #define CONCURRENTQUEUE_H
-#include <cstdint>
+#include <atomic>
 #include <semaphore>
 
 namespace concurrent_queue {
@@ -16,8 +16,8 @@ namespace concurrent_queue {
         static_assert(N <= 32, "N must be less than 32");
     private:
         T* data;
-        std::atomic_uint headptr;
-        std::atomic_uint tailptr;
+        std::atomic<uint> headptr;
+        std::atomic<uint> tailptr;
         std::counting_semaphore<1 << N> slotSem;
         std::counting_semaphore<1 << N> itemSem;
     public:
