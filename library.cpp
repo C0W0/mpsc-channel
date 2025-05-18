@@ -68,7 +68,7 @@ struct Item {
 
 // Simple stress test to verify MPMC safety
 TestResult stress_test() {
-    SAFE_COUT("\n=== STRESS TEST (3 producers, 2 consumers) ===");
+    SAFE_COUT("\n=== STRESS TEST (3 producers, 1 consumer) ===");
     using namespace mpsc_queue;
     
     // Queue with 32 slots
@@ -182,6 +182,10 @@ TestResult stress_test() {
     
     SAFE_COUT(message.str());
     return {success, message.str()};
+}
+
+TestResult auto_exit_consumer_test() {
+
 }
 
 int main() {
